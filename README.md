@@ -1,56 +1,94 @@
-# MicroSkribbl
+# LineraFlow - Decentralized Donation Platform
 
-MicroSkribbl is a blockchain-powered drawing game built on Linera microchains. All core features—except the canvas strokes—run on-chain: room creation and joining, subscriptions, chat, word selection, event handling, and cross-chain messages. The secret word lives only on the artist’s chain; the host never re-emits it.
+LineraFlow is a next-generation donation platform built on the **Linera** blockchain protocol. It empowers creators to receive donations directly, securely, and with zero platform risk, leveraging the infinite scalability and low latency of microchains.
 
-## Quick Start
+## 🚀 Features
 
-- Requirements: Node.js ≥ 18, npm
-- Install: `npm i`
-- Environment (`.env`):
-  - `VITE_LINERA_FAUCET_URL=<faucet URL>`
-  - `VITE_LINERA_APPLICATION_ID=<deployed application ID>`
-- Run frontend: `npm run dev` (port `3100`)
-- Drawing driver (optional): `npm run dev:draw`
-- Run both (Windows PowerShell): `npm run dev:all`
-- Build: `npm run build`
+*   **Decentralized Identity**: Users register profiles directly on the Linera blockchain.
+*   **Real-time Donations**: Instant transactions with 0ms latency using Linera's microchain architecture.
+*   **Global Index**: Discover creators and authors through a searchable global directory.
+*   **PocketBase Integration**: Hybrid architecture using PocketBase for efficient indexing and querying of off-chain metadata while keeping the source of truth on-chain.
+*   **Brutalist Design**: A unique, high-contrast "Brutalist/Grid" UI design system.
 
-## Smart-Contract Architecture (microchains)
+## 🛠 Tech Stack
 
-- Host chain: room state, rounds, timers, current drawer
-- Artist chain: secret word; host does not receive it
-- Player chains: chat, guessed state, points
-- Client subscribes to notifications and queries after each event (`src/components/Game.tsx:177`)
+*   **Frontend**: React, Vite, Tailwind CSS
+*   **Blockchain**: Linera SDK (WASM)
+*   **Backend/Indexer**: PocketBase, Node.js (Indexer)
+*   **Deployment**: Nginx, Docker (optional), Systemd
 
-## Contract API (GraphQL)
+## 📋 Prerequisites
 
-- Mutations:
-  - `createRoom(hostName)` (`src/components/Lobby.tsx:41`)
-  - `joinRoom(hostChainId, playerName)` (`src/components/Lobby.tsx:55`)
-  - `startGame(rounds, secondsPerRound)` (`src/components/WaitingRoom.tsx:42`)
-  - `chooseDrawer` (`src/components/Game.tsx:306`)
-  - `chooseWord(word)` (`src/components/Game.tsx:278`)
-  - `guessWord(guess)` (`src/components/Game.tsx:290`)
-  - `leaveRoom` (`src/components/Game.tsx:377`)
-- State query:
-  - `room { hostChainId players { chainId name score hasGuessed } gameState currentRound totalRounds secondsPerRound currentDrawerIndex wordChosenAt drawerChosenAt chatMessages { playerName message isCorrectGuess pointsAwarded } }` (`src/components/Game.tsx:93`)
+*   Node.js v20+
+*   Linera Wallet Extension (for browser interaction)
+*   PocketBase (for local indexing)
 
-## Wallet & Client Initialization
+## ⚙️ Environment Variables
 
-- Reads `.env`: `VITE_LINERA_FAUCET_URL`, `VITE_LINERA_APPLICATION_ID` (`src/components/LineraProvider.tsx:39-40,92-93`)
-- Generates mnemonic, creates wallet and claims chain via Faucet (`src/components/LineraProvider.tsx:54-55,111-112`)
-- Creates client and fetches application frontend (`src/components/LineraProvider.tsx:57,114`)
-- Auto re-init on WASM errors (`src/components/LineraProvider.tsx:143`)
+Create a `.env` file in the root directory with the following configuration:
 
-## Port
+```env
+# Linera Network Configuration
+VITE_LINERA_FAUCET_URL=https://faucet.testnet-conway.linera.net
+VITE_LINERA_APPLICATION_ID=<YOUR_LINERA_APP_ID>
+VITE_LINERA_MAIN_CHAIN_ID=<YOUR_MAIN_CHAIN_ID>
 
-- Frontend listens on `3100` (`vite.config.ts:68`)
+# PocketBase Configuration
+VITE_POCKETBASE_URL=http://127.0.0.1:8090 # Or your production URL
+```
 
-## Security
+## 🏃‍♂️ Running Locally
 
-- The secret word exists only on the artist’s chain; the host never re-emits it
-- Future: add an extra encryption layer for the word
+1.  **Install Dependencies:**
+    ```bash
+    npm install
+    ```
 
-## Troubleshooting
+2.  **Start PocketBase:**
+    Download PocketBase and run it on port 8090:
+    ```bash
+    ./pocketbase serve --http=127.0.0.1:8090
+    ```
 
-- Stuck on “Initializing Wallet…”: check `VITE_LINERA_FAUCET_URL` and `VITE_LINERA_APPLICATION_ID`
-- On WASM runtime errors, the provider auto re-initializes
+3.  **Start the Indexer:**
+    (If you have a separate indexer service)
+    ```bash
+    cd indexer
+    npm install
+    npm start
+    ```
+
+4.  **Run the Frontend:**
+    ```bash
+    npm run dev
+    ```
+    The app will be available at `http://localhost:3030`.
+
+5.  **Deploy smart contracts:**
+   ```bash
+    linera project publish-and-create     --json-argument '{
+        "accounts": {
+            "input your owner": "1"
+        }
+    }'     --json-parameters '{
+        "ticker_symbol": "NAT"
+    }'
+```
+
+## 🚀 Deployment
+
+The project includes a production deployment script for Ubuntu servers.
+
+1.  **Upload the project to your server.**
+2.  **Run the deployment script:**
+    ```bash
+    chmod +x deploy/setup_production.sh
+    sudo ./deploy/setup_production.sh
+    ```
+
+This script will:
+*   Install Nginx, Node.js, and Certbot.
+*   Build the React application.
+*   Install and configure PocketBase as a systemd service.
+*   Configure Nginx with SSL (Let's Encrypt) and set up a reverse proxy for PocketBase on port 8090.
+*   Apply necessary security headers (COEP/COOP) required for Linera's WASM client.
