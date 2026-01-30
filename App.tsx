@@ -14,6 +14,7 @@ import { pb } from './components/pocketbase';
 import Marketplace from './components/Marketplace';
 import ProductDetail from './components/ProductDetail';
 import Feed from './components/Feed';
+import Statistics from './components/Statistics';
 
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 
@@ -298,7 +299,8 @@ const AppContent: React.FC = () => {
   const currentView = location.pathname === '/profile' ? 'PROFILE'
     : location.pathname === '/feed' ? 'FEED'
       : location.pathname.startsWith('/marketplace') || location.pathname.startsWith('/chain') ? 'MARKETPLACE'
-        : 'EXPLORE';
+        : location.pathname === '/statistics' ? 'STATISTICS'
+          : 'EXPLORE';
 
   return (
     <div className="min-h-screen w-full bg-paper-white bg-grid-pattern relative overflow-x-hidden selection:bg-linera-red selection:text-white font-sans">
@@ -318,6 +320,7 @@ const AppContent: React.FC = () => {
                 else if (view === 'PROFILE') navigate('/profile');
                 else if (view === 'MARKETPLACE') navigate('/marketplace');
                 else if (view === 'FEED') navigate('/feed');
+                else if (view === 'STATISTICS') navigate('/statistics');
                 else navigate('/');
               }}
               wallet={walletState}
@@ -364,6 +367,7 @@ const AppContent: React.FC = () => {
                 <Route path="/create-product" element={<Marketplace currentUserAddress={accountOwner || undefined} />} />
                 <Route path="/chain/:chainId" element={<Marketplace currentUserAddress={accountOwner || undefined} />} />
                 <Route path="/chain/:chainId/product/:productId" element={<ProductDetail />} />
+                <Route path="/statistics" element={<Statistics />} />
 
               </Routes>
             </main>

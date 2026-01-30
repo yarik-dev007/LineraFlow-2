@@ -8,7 +8,7 @@ use linera_sdk::{linera_base_types::{AccountOwner, WithServiceAbi, Amount}, view
 use donations::{
     DonationsAbi, Operation, AccountInput, Profile as LibProfile, DonationRecord as LibDonationRecord,
     ProfileView, DonationView, SocialLinkInput, TotalAmountView, CustomFields, OrderFormField,
-    OrderFormFieldInput, OrderResponses, Product, ContentSubscription, Post,
+    OrderFormFieldInput, OrderResponses, Product, ContentSubscription, Post, Poll, PollOption, Giveaway, GiveawayParticipant,
 };
 use state::DonationsState;
 use async_graphql::{SimpleObject, InputObject};
@@ -70,6 +70,54 @@ struct PurchaseFullView {
     product: ProductFullView,
 }
 
+// Poll option view
+#[derive(SimpleObject, Clone)]
+struct PollOptionView {
+    text: String,
+    votes_count: u32,
+}
+
+// Poll view with computed fields
+#[derive(SimpleObject)]
+struct PollView {
+    options: Vec<PollOptionView>,
+    end_timestamp: u64,
+    total_votes: u32,
+    is_ended: bool,
+}
+
+// Post view with poll
+#[derive(SimpleObject)]
+struct PostView {
+    id: String,
+    author: AccountOwner,
+    author_chain_id: String,
+    title: String,
+    content: String,
+    image_hash: Option<String>,
+    created_at: u64,
+    poll: Option<PollView>,
+    giveaway: Option<GiveawayView>,
+}
+
+// Giveaway participant view
+#[derive(SimpleObject, Clone)]
+struct GiveawayParticipantView {
+    owner: AccountOwner,
+    chain_id: String,
+}
+
+// Giveaway view with computed fields
+#[derive(SimpleObject)]
+struct GiveawayView {
+    prize_amount: Amount,
+    end_timestamp: u64,
+    participants_count: u32,
+    is_ended: bool,
+    is_resolved: bool,
+    winner: Option<GiveawayParticipantView>,
+}
+
 // Helper functions
 fn btree_to_pairs(map: &CustomFields) -> Vec<KeyValuePair> {
     map.iter().map(|(k, v)| KeyValuePair { key: k.clone(), value: v.clone() }).collect()
@@ -110,7 +158,50 @@ fn product_to_full_view(p: &Product) -> ProductFullView {
     }
 }
 
+fn poll_to_view(poll: &Poll, current_time: u64) -> PollView {
+    let total_votes = poll.options.iter().map(|o| o.votes_count).sum();
+    PollView {
+        options: poll.options.iter().map(|o| PollOptionView {
+            text: o.text.clone(),
+            votes_count: o.votes_count,
+        }).collect(),
+        end_timestamp: poll.end_timestamp,
+        total_votes,
+        is_ended: poll.end_timestamp > 0 && current_time > poll.end_timestamp,
+    }
+}
+
+fn giveaway_to_view(giveaway: &Giveaway, current_time: u64) -> GiveawayView {
+    GiveawayView {
+        prize_amount: giveaway.prize_amount,
+        end_timestamp: giveaway.end_timestamp,
+        participants_count: giveaway.participants.len() as u32,
+        is_ended: giveaway.end_timestamp > 0 && current_time > giveaway.end_timestamp,
+        is_resolved: giveaway.is_resolved,
+        winner: giveaway.winner.as_ref().map(|w| GiveawayParticipantView {
+            owner: w.owner,
+            chain_id: w.chain_id.clone(),
+        }),
+    }
+}
+
+fn post_to_view(post: &Post, current_time: u64) -> PostView {
+    PostView {
+        id: post.id.clone(),
+        author: post.author,
+        author_chain_id: post.author_chain_id.clone(),
+        title: post.title.clone(),
+        content: post.content.clone(),
+        image_hash: post.image_hash.clone(),
+        created_at: post.created_at,
+        poll: post.poll.as_ref().map(|p| poll_to_view(p, current_time)),
+        giveaway: post.giveaway.as_ref().map(|g| giveaway_to_view(g, current_time)),
+    }
+}
+
+
 linera_sdk::service!(DonationsService);
+
 
 pub struct DonationsService { runtime: Arc<ServiceRuntime<Self>> }
 
@@ -710,11 +801,12 @@ impl QueryRoot {
     }
     
     /// Get all posts by an author
-    async fn posts_by_author(&self, author: AccountOwner) -> Vec<Post> {
+    async fn posts_by_author(&self, author: AccountOwner) -> Vec<PostView> {
         match DonationsState::load(self.storage_context.clone()).await {
             Ok(state) => {
+                let current_time = self.runtime.system_time().micros();
                 match state.list_posts_by_author(author).await {
-                    Ok(posts) => posts,
+                    Ok(posts) => posts.iter().map(|p| post_to_view(p, current_time)).collect(),
                     Err(_) => Vec::new(),
                 }
             },
@@ -723,7 +815,7 @@ impl QueryRoot {
     }
     
     /// Get feed of posts from authors you're subscribed to
-    async fn my_feed(&self, subscriber: AccountOwner) -> Vec<Post> {
+    async fn my_feed(&self, subscriber: AccountOwner) -> Vec<PostView> {
         match DonationsState::load(self.storage_context.clone()).await {
             Ok(state) => {
                 let current_time = self.runtime.system_time().micros();
@@ -746,7 +838,7 @@ impl QueryRoot {
                         
                         // Sort by created_at descending (newest first)
                         all_posts.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-                        all_posts
+                        all_posts.iter().map(|p| post_to_view(p, current_time)).collect()
                     },
                     _ => Vec::new(),
                 }
@@ -754,7 +846,24 @@ impl QueryRoot {
             Err(_) => Vec::new(),
         }
     }
+    
+
+    
+    /// Get a single post with poll view
+    async fn post_view(&self, post_id: String) -> Option<PostView> {
+        match DonationsState::load(self.storage_context.clone()).await {
+            Ok(state) => {
+                let current_time = self.runtime.system_time().micros();
+                match state.get_post(&post_id).await {
+                    Ok(Some(post)) => Some(post_to_view(&post, current_time)),
+                    _ => None,
+                }
+            },
+            Err(_) => None,
+        }
+    }
 }
+
 
 struct MutationRoot { runtime: Arc<ServiceRuntime<DonationsService>> }
 
@@ -920,16 +1029,30 @@ impl MutationRoot {
     }
     
     /// Create a new post (will be sent to active subscribers)
+    /// Optionally include a poll with options and end timestamp
+    /// Optionally include a giveaway with prize amount and end timestamp
     async fn create_post(
         &self,
         title: String,
         content: String,
         image_hash: Option<String>,
+        poll_options: Option<Vec<String>>,
+        poll_end_timestamp: Option<String>,  // Timestamp in microseconds as string
+        giveaway_prize: Option<String>,       // Prize amount as string
+        giveaway_end_timestamp: Option<String>,  // Timestamp in microseconds as string
     ) -> String {
+
+        let poll_end = poll_end_timestamp.and_then(|ts| ts.parse::<u64>().ok());
+        let giveaway_end = giveaway_end_timestamp.and_then(|ts| ts.parse::<u64>().ok());
+        let prize = giveaway_prize.and_then(|p| p.parse::<Amount>().ok());
         self.runtime.schedule_operation(&Operation::CreatePost {
             title,
             content,
             image_hash,
+            poll_options: poll_options.unwrap_or_default(),
+            poll_end_timestamp: poll_end,
+            giveaway_prize: prize,
+            giveaway_end_timestamp: giveaway_end,
         });
         "ok".to_string()
     }
@@ -956,7 +1079,61 @@ impl MutationRoot {
         self.runtime.schedule_operation(&Operation::DeletePost { post_id });
         "ok".to_string()
     }
+    
+    /// Cast a vote on a poll
+    /// author_chain_id: The chain ID where the author's posts are stored
+    /// author: The author's AccountOwner
+    /// post_id: ID of the post with the poll
+    /// option_index: Index of the poll option to vote for (0-based)
+    async fn cast_vote(
+        &self,
+        author_chain_id: String,
+        author: AccountOwner,
+        post_id: String,
+        option_index: u32,
+    ) -> String {
+        let chain_id = author_chain_id.parse().expect("Invalid chain ID");
+        self.runtime.schedule_operation(&Operation::CastVote {
+            author_chain_id: chain_id,
+            author,
+            post_id,
+            option_index,
+        });
+        "ok".to_string()
+    }
+    
+    /// Participate in a giveaway
+    /// author_chain_id: The chain ID where the author's posts are stored
+    /// author: The author's AccountOwner
+    /// post_id: ID of the post with the giveaway
+    async fn participate_in_giveaway(
+        &self,
+        author_chain_id: String,
+        author: AccountOwner,
+        post_id: String,
+    ) -> String {
+        let chain_id = author_chain_id.parse().expect("Invalid chain ID");
+        self.runtime.schedule_operation(&Operation::ParticipateInGiveaway {
+            author_chain_id: chain_id,
+            author,
+            post_id,
+        });
+        "ok".to_string()
+    }
+    
+    /// Resolve a giveaway and pick a winner (author only)
+    /// post_id: ID of the post with the giveaway to resolve
+    async fn resolve_giveaway(
+        &self,
+        post_id: String,
+    ) -> String {
+        self.runtime.schedule_operation(&Operation::ResolveGiveaway {
+            post_id,
+        });
+        "ok".to_string()
+    }
 }
+
 
 // Input types for GraphQL mutations
 #[derive(InputObject)]

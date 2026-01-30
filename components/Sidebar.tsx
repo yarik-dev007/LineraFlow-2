@@ -1,6 +1,6 @@
 import React from 'react';
 import { AppView, WalletState } from '../types';
-import { Wallet } from 'lucide-react';
+import { Wallet, BarChart2 } from 'lucide-react';
 
 
 interface SidebarProps {
@@ -16,6 +16,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, setView, wallet, onToggl
     { id: 'MARKETPLACE', label: 'MARKET', icon: '◇' },
     { id: 'FEED', label: 'MY FEED', icon: '▤' },
     { id: 'PROFILE', label: 'IDENTITY', icon: '□' },
+    { id: 'STATISTICS', label: 'STATS', icon: <BarChart2 className="w-5 h-5" /> },
   ];
 
   return (

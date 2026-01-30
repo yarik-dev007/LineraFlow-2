@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useLinera } from './LineraProvider';
-import { X, Image, Upload } from 'lucide-react';
+import { X, Image, Upload, MessageSquare, Gift, Plus, Trash2, Calendar } from 'lucide-react';
 import { pb } from './pocketbase';
 
 interface PostData {
@@ -24,6 +24,32 @@ const CreatePostModal: React.FC<CreatePostModalProps> = ({ onClose, onSuccess, i
     const [uploadStatus, setUploadStatus] = useState('');
     const [imageHash, setImageHash] = useState<string | null>(initialData?.imageHash || null);
     const [isSubmitting, setIsSubmitting] = useState(false);
+
+    // Poll State
+    const [hasPoll, setHasPoll] = useState(false);
+    const [pollOptions, setPollOptions] = useState<string[]>(['Yes', 'No']);
+    const [pollEndDate, setPollEndDate] = useState('');
+
+    // Giveaway State
+    const [hasGiveaway, setHasGiveaway] = useState(false);
+    const [giveawayPrize, setGiveawayPrize] = useState('');
+    const [giveawayEndDate, setGiveawayEndDate] = useState('');
+
+    const addPollOption = () => {
+        if (pollOptions.length < 10) setPollOptions([...pollOptions, '']);
+    };
+
+    const updatePollOption = (index: number, value: string) => {
+        const newOptions = [...pollOptions];
+        newOptions[index] = value;
+        setPollOptions(newOptions);
+    };
+
+    const removePollOption = (index: number) => {
+        if (pollOptions.length > 2) {
+            setPollOptions(pollOptions.filter((_, i) => i !== index));
+        }
+    };
 
     // Reused upload logic from ProfileEditor/CreateProduct
     const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -97,11 +123,36 @@ const CreatePostModal: React.FC<CreatePostModalProps> = ({ onClose, onSuccess, i
                 }`;
             } else {
                 // CREATE Mode
+                // PREPARE POLL ARGS
+                let pollArgs = '';
+                if (hasPoll) {
+                    const optionsString = JSON.stringify(pollOptions.filter(o => o.trim() !== ''));
+                    // Convert local datetime to microseconds timestamp string
+                    // Input is "YYYY-MM-DDTHH:mm" -> Date -> getTime() * 1000
+                    const endTime = pollEndDate ? (new Date(pollEndDate).getTime() * 1000).toString() : 'null';
+                    pollArgs = `
+                        pollOptions: ${optionsString},
+                        pollEndTimestamp: "${endTime}",
+                    `;
+                }
+
+                // PREPARE GIVEAWAY ARGS
+                let giveawayArgs = '';
+                if (hasGiveaway) {
+                    const endTime = giveawayEndDate ? (new Date(giveawayEndDate).getTime() * 1000).toString() : 'null';
+                    giveawayArgs = `
+                        giveawayPrize: "${giveawayPrize}",
+                        giveawayEndTimestamp: "${endTime}",
+                    `;
+                }
+
                 mutation = `mutation {
                     createPost(
                         title: "${title}",
                         content: "${content.replace(/\r?\n/g, "\\n").replace(/"/g, '\\"')}",
                         imageHash: ${imageHash ? `"${imageHash}"` : 'null'}
+                        ${pollArgs}
+                        ${giveawayArgs}
                     )
                 }`;
             }
@@ -119,9 +170,9 @@ const CreatePostModal: React.FC<CreatePostModalProps> = ({ onClose, onSuccess, i
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
-            <div className="w-full max-w-lg bg-paper-white border-4 border-deep-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] relative">
+            <div className="w-full max-w-lg bg-paper-white border-4 border-deep-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] relative flex flex-col max-h-[90vh]">
                 {/* Header */}
-                <div className="bg-deep-black text-white p-4 flex justify-between items-center">
+                <div className="bg-deep-black text-white p-4 flex justify-between items-center shrink-0">
                     <h2 className="font-display text-xl uppercase tracking-wider">
                         {initialData ? 'Edit Transmission' : 'New Transmission'}
                     </h2>
@@ -130,67 +181,187 @@ const CreatePostModal: React.FC<CreatePostModalProps> = ({ onClose, onSuccess, i
                     </button>
                 </div>
 
-                <form onSubmit={handleSubmit} className="p-6 space-y-4">
-                    {/* Title */}
-                    <div>
-                        <label className="block font-mono text-xs font-bold uppercase mb-1">Subject / Title</label>
-                        <input
-                            type="text"
-                            value={title}
-                            onChange={e => setTitle(e.target.value)}
-                            className="w-full bg-white border-2 border-deep-black p-2 font-bold focus:shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] outline-none transition-shadow"
-                            placeholder="Announce something..."
-                        />
-                    </div>
+                <form onSubmit={handleSubmit} className="flex flex-col min-h-0">
+                    {/* Scrollable Content */}
+                    <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                        {/* Title */}
+                        <div>
+                            <label className="block font-mono text-xs font-bold uppercase mb-1">Subject / Title</label>
+                            <input
+                                type="text"
+                                value={title}
+                                onChange={e => setTitle(e.target.value)}
+                                className="w-full bg-white border-2 border-deep-black p-2 font-bold focus:shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] outline-none transition-shadow"
+                                placeholder="Announce something..."
+                            />
+                        </div>
 
-                    {/* Content */}
-                    <div>
-                        <label className="block font-mono text-xs font-bold uppercase mb-1">Message</label>
-                        <textarea
-                            value={content}
-                            onChange={e => setContent(e.target.value)}
-                            className="w-full h-32 bg-white border-2 border-deep-black p-2 font-mono text-sm focus:shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] outline-none transition-shadow resize-none"
-                            placeholder="Write your update..."
-                        />
-                    </div>
+                        {/* Content */}
+                        <div>
+                            <label className="block font-mono text-xs font-bold uppercase mb-1">Message</label>
+                            <textarea
+                                value={content}
+                                onChange={e => setContent(e.target.value)}
+                                className="w-full h-32 bg-white border-2 border-deep-black p-2 font-mono text-sm focus:shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] outline-none transition-shadow resize-none"
+                                placeholder="Write your update..."
+                            />
+                        </div>
 
-                    {/* Image Upload */}
-                    <div className="border-2 border-dashed border-deep-black p-4 bg-gray-50 flex flex-col items-center gap-2">
-                        <label className="cursor-pointer flex flex-col items-center gap-2 hover:opacity-70 transition-opacity">
-                            <Upload className="w-8 h-8 text-emerald-600" />
-                            <span className="font-mono text-xs font-bold uppercase">
-                                {imageHash ? 'Change Media' : 'Upload Media'} <span className="text-[10px] font-normal text-gray-500">(Max 1MB)</span>
-                            </span>
-                            <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
-                        </label>
+                        {/* Image Upload */}
+                        <div className="border-2 border-dashed border-deep-black p-4 bg-gray-50 flex flex-col items-center gap-2">
+                            <label className="cursor-pointer flex flex-col items-center gap-2 hover:opacity-70 transition-opacity">
+                                <Upload className="w-8 h-8 text-emerald-600" />
+                                <span className="font-mono text-xs font-bold uppercase">
+                                    {imageHash ? 'Change Media' : 'Upload Media'} <span className="text-[10px] font-normal text-gray-500">(Max 1MB)</span>
+                                </span>
+                                <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                            </label>
 
-                        {imageFile && (
-                            <div className="flex items-center gap-2 text-xs font-mono bg-white border border-deep-black px-2 py-1 mt-2">
-                                <Image className="w-3 h-3" />
-                                <span className="truncate max-w-[200px]">{imageFile.name}</span>
+                            {imageFile && (
+                                <div className="flex items-center gap-2 text-xs font-mono bg-white border border-deep-black px-2 py-1 mt-2">
+                                    <Image className="w-3 h-3" />
+                                    <span className="truncate max-w-[200px]">{imageFile.name}</span>
+                                </div>
+                            )}
+
+                            {imageHash && !imageFile && (
+                                <div className="flex items-center gap-2 text-xs font-mono bg-emerald-100 border border-emerald-500 px-2 py-1 mt-2">
+                                    <Image className="w-3 h-3 text-emerald-700" />
+                                    <span className="truncate max-w-[200px] text-emerald-700">Existing Image Preserved</span>
+                                </div>
+                            )}
+
+                            {uploadStatus && (
+                                <span className={`text-[10px] font-bold uppercase ${uploadStatus.includes('✅') ? 'text-emerald-600' : 'text-linera-red'}`}>
+                                    {uploadStatus}
+                                </span>
+                            )}
+                        </div>
+
+                        {/* Features Toggles */}
+                        {!initialData && (
+                            <div className="flex gap-4">
+                                <button
+                                    type="button"
+                                    onClick={() => { setHasPoll(!hasPoll); if (!hasPoll) setHasGiveaway(false); }}
+                                    className={`flex-1 flex items-center justify-center gap-2 py-3 border-2 transition-all ${hasPoll ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-400 hover:border-gray-300'}`}
+                                >
+                                    <MessageSquare className="w-5 h-5" />
+                                    <span className="font-mono font-bold uppercase text-xs">Add Poll</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => { setHasGiveaway(!hasGiveaway); if (!hasGiveaway) setHasPoll(false); }}
+                                    className={`flex-1 flex items-center justify-center gap-2 py-3 border-2 transition-all ${hasGiveaway ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-400 hover:border-gray-300'}`}
+                                >
+                                    <Gift className="w-5 h-5" />
+                                    <span className="font-mono font-bold uppercase text-xs">Add Giveaway</span>
+                                </button>
                             </div>
                         )}
 
-                        {imageHash && !imageFile && (
-                            <div className="flex items-center gap-2 text-xs font-mono bg-emerald-100 border border-emerald-500 px-2 py-1 mt-2">
-                                <Image className="w-3 h-3 text-emerald-700" />
-                                <span className="truncate max-w-[200px] text-emerald-700">Existing Image Preserved</span>
+                        {/* POLL EDITOR */}
+                        {hasPoll && (
+                            <div className="bg-gray-50 border-2 border-gray-200 p-4 space-y-4 animate-fade-in">
+                                <div className="flex justify-between items-center">
+                                    <h3 className="font-display uppercase text-sm text-deep-black">Poll Configuration</h3>
+                                    <button type="button" onClick={() => setHasPoll(false)}><X className="w-4 h-4" /></button>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <label className="block font-mono text-xs font-bold uppercase">End Date</label>
+                                    <div className="flex items-center gap-2 bg-white border-2 border-deep-black p-2">
+                                        <Calendar className="w-4 h-4 text-gray-500" />
+                                        <input
+                                            type="datetime-local"
+                                            value={pollEndDate}
+                                            onChange={e => setPollEndDate(e.target.value)}
+                                            className="w-full outline-none font-mono text-sm"
+                                            required={hasPoll}
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <label className="block font-mono text-xs font-bold uppercase">Options</label>
+                                    {pollOptions.map((opt, idx) => (
+                                        <div key={idx} className="flex gap-2">
+                                            <input
+                                                type="text"
+                                                value={opt}
+                                                onChange={e => updatePollOption(idx, e.target.value)}
+                                                placeholder={`Option ${idx + 1}`}
+                                                className="flex-1 bg-white border-2 border-gray-300 p-2 font-mono text-sm focus:border-deep-black outline-none"
+                                                required
+                                            />
+                                            {pollOptions.length > 2 && (
+                                                <button type="button" onClick={() => removePollOption(idx)} className="text-gray-400 hover:text-linera-red">
+                                                    <Trash2 className="w-5 h-5" />
+                                                </button>
+                                            )}
+                                        </div>
+                                    ))}
+                                    {pollOptions.length < 10 && (
+                                        <button
+                                            type="button"
+                                            onClick={addPollOption}
+                                            className="text-xs font-mono uppercase font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1"
+                                        >
+                                            <Plus className="w-4 h-4" /> Add Option
+                                        </button>
+                                    )}
+                                </div>
                             </div>
                         )}
 
-                        {uploadStatus && (
-                            <span className={`text-[10px] font-bold uppercase ${uploadStatus.includes('✅') ? 'text-emerald-600' : 'text-linera-red'}`}>
-                                {uploadStatus}
-                            </span>
+                        {/* GIVEAWAY EDITOR */}
+                        {hasGiveaway && (
+                            <div className="bg-gray-50 border-2 border-gray-200 p-4 space-y-4 animate-fade-in">
+                                <div className="flex justify-between items-center">
+                                    <h3 className="font-display uppercase text-sm text-deep-black">Giveaway Configuration</h3>
+                                    <button type="button" onClick={() => setHasGiveaway(false)}><X className="w-4 h-4" /></button>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block font-mono text-xs font-bold uppercase mb-1">Prize Amount</label>
+                                        <input
+                                            type="number"
+                                            step="0.01"
+                                            value={giveawayPrize}
+                                            onChange={e => setGiveawayPrize(e.target.value)}
+                                            className="w-full bg-white border-2 border-deep-black p-2 font-mono text-sm focus:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] outline-none"
+                                            placeholder="0.00"
+                                            required={hasGiveaway}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block font-mono text-xs font-bold uppercase mb-1">End Date</label>
+                                        <div className="flex items-center gap-2 bg-white border-2 border-deep-black p-2 h-[38px]">
+                                            <Calendar className="w-4 h-4 text-gray-500 shrink-0" />
+                                            <input
+                                                type="datetime-local"
+                                                value={giveawayEndDate}
+                                                onChange={e => setGiveawayEndDate(e.target.value)}
+                                                className="w-full outline-none font-mono text-sm"
+                                                required={hasGiveaway}
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+                                <p className="text-[10px] font-mono text-gray-500">
+                                    * Prize amount will be locked from your balance immediately.
+                                </p>
+                            </div>
                         )}
                     </div>
 
-                    {/* Actions */}
-                    <div className="pt-4 flex gap-4">
+                    {/* Actions Footer */}
+                    <div className="p-4 bg-gray-50 border-t-2 border-gray-100 flex gap-4 shrink-0">
                         <button
                             type="button"
                             onClick={onClose}
-                            className="flex-1 font-mono font-bold uppercase py-3 border-2 border-transparent hover:bg-gray-100 transition-colors"
+                            className="flex-1 font-mono font-bold uppercase py-3 border-2 border-transparent hover:bg-gray-200 transition-colors"
                         >
                             Cancel
                         </button>

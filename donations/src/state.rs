@@ -1,7 +1,7 @@
 use linera_sdk::views::{linera_views, MapView, RegisterView, RootView, ViewStorageContext, ViewError};
 use linera_sdk::linera_base_types::{AccountOwner, Amount};
 use donations::{
-    Profile, DonationRecord, SocialLink, Product, Purchase, CustomFields, OrderFormField, ContentSubscription, Post, SubscriptionInfo,
+    Profile, DonationRecord, SocialLink, Product, Purchase, CustomFields, OrderFormField, ContentSubscription, Post, SubscriptionInfo, Poll, PollOption, Giveaway, GiveawayParticipant,
 };
 
 #[derive(RootView)]
@@ -411,5 +411,111 @@ impl DonationsState {
         self.posts_by_author.insert(&author, author_posts).map_err(|e: ViewError| format!("{:?}", e))?;
         
         Ok(())
+    }
+    
+    /// Cast a vote on a post's poll. Returns the updated Poll on success.
+    pub async fn cast_vote(&mut self, post_id: &str, voter_id: String, option_index: u32) -> Result<Poll, String> {
+        let mut post = self.posts.get(&post_id.to_string()).await
+            .map_err(|e: ViewError| format!("{:?}", e))?
+            .ok_or("Post not found")?;
+        
+        let poll = post.poll.as_mut().ok_or("Post has no poll")?;
+        
+        // Check option index is valid
+        if option_index as usize >= poll.options.len() {
+            return Err("Invalid option index".to_string());
+        }
+        
+        // If already voted - decrease old vote count
+        if let Some(&old_index) = poll.voters.get(&voter_id) {
+            if let Some(opt) = poll.options.get_mut(old_index as usize) {
+                opt.votes_count = opt.votes_count.saturating_sub(1);
+            }
+        }
+        
+        // Add new vote
+        if let Some(opt) = poll.options.get_mut(option_index as usize) {
+            opt.votes_count += 1;
+            poll.voters.insert(voter_id, option_index);
+        }
+        
+        let updated_poll = poll.clone();
+        
+        self.posts.insert(&post_id.to_string(), post).map_err(|e: ViewError| format!("{:?}", e))?;
+        
+        Ok(updated_poll)
+    }
+    
+    /// Update poll results from another chain (for subscribers)
+    pub async fn update_poll_results(&mut self, post_id: &str, poll: Poll) -> Result<(), String> {
+        let mut post = self.posts.get(&post_id.to_string()).await
+            .map_err(|e: ViewError| format!("{:?}", e))?
+            .ok_or("Post not found")?;
+        
+        post.poll = Some(poll);
+        
+        self.posts.insert(&post_id.to_string(), post).map_err(|e: ViewError| format!("{:?}", e))
+    }
+    
+    /// Add a participant to a giveaway
+    pub async fn add_giveaway_participant(&mut self, post_id: &str, participant: GiveawayParticipant) -> Result<Giveaway, String> {
+        let mut post = self.posts.get(&post_id.to_string()).await
+            .map_err(|e: ViewError| format!("{:?}", e))?
+            .ok_or("Post not found")?;
+        
+        let giveaway = post.giveaway.as_mut().ok_or("Post has no giveaway")?;
+        
+        // Check if already participating
+        let owner_str = participant.owner.to_string();
+        if giveaway.participants.iter().any(|p| p.owner.to_string() == owner_str) {
+            return Err("Already participating".to_string());
+        }
+        
+        giveaway.participants.push(participant);
+        
+        let updated_giveaway = giveaway.clone();
+        
+        self.posts.insert(&post_id.to_string(), post).map_err(|e: ViewError| format!("{:?}", e))?;
+        
+        Ok(updated_giveaway)
+    }
+    
+    /// Resolve giveaway and set winner by index
+    pub async fn resolve_giveaway(&mut self, post_id: &str, winner_index: usize) -> Result<GiveawayParticipant, String> {
+        let mut post = self.posts.get(&post_id.to_string()).await
+            .map_err(|e: ViewError| format!("{:?}", e))?
+            .ok_or("Post not found")?;
+        
+        let giveaway = post.giveaway.as_mut().ok_or("Post has no giveaway")?;
+        
+        if giveaway.is_resolved {
+            return Err("Giveaway already resolved".to_string());
+        }
+        
+        if giveaway.participants.is_empty() {
+            return Err("No participants".to_string());
+        }
+        
+        let winner = giveaway.participants.get(winner_index % giveaway.participants.len())
+            .cloned()
+            .ok_or("Invalid winner index")?;
+        
+        giveaway.winner = Some(winner.clone());
+        giveaway.is_resolved = true;
+        
+        self.posts.insert(&post_id.to_string(), post).map_err(|e: ViewError| format!("{:?}", e))?;
+        
+        Ok(winner)
+    }
+    
+    /// Update giveaway from another chain (for subscribers)
+    pub async fn update_giveaway(&mut self, post_id: &str, giveaway: Giveaway) -> Result<(), String> {
+        let mut post = self.posts.get(&post_id.to_string()).await
+            .map_err(|e: ViewError| format!("{:?}", e))?
+            .ok_or("Post not found")?;
+        
+        post.giveaway = Some(giveaway);
+        
+        self.posts.insert(&post_id.to_string(), post).map_err(|e: ViewError| format!("{:?}", e))
     }
 }

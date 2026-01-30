@@ -427,12 +427,39 @@ impl Contract for DonationsContract {
                 ResponseData::Ok
             }
             
-            Operation::CreatePost { title, content, image_hash } => {
+            Operation::CreatePost { title, content, image_hash, poll_options, poll_end_timestamp, giveaway_prize, giveaway_end_timestamp } => {
                 let author = self.runtime.authenticated_signer().unwrap();
                 let ts = self.runtime.system_time().micros();
                 // Generate 12-character hex ID from timestamp
                 let post_id = format!("{:012x}", ts % 0x1000000000000);
                 let author_chain_id = self.runtime.chain_id();
+                
+                // Create poll if options provided
+                let poll = if !poll_options.is_empty() {
+                    Some(donations::Poll {
+                        options: poll_options.into_iter().map(|text| donations::PollOption {
+                            text,
+                            votes_count: 0,
+                        }).collect(),
+                        end_timestamp: poll_end_timestamp.unwrap_or(0),
+                        voters: std::collections::BTreeMap::new(),
+                    })
+                } else {
+                    None
+                };
+                
+                // Create giveaway if prize provided
+                let giveaway = if let Some(prize_amount) = giveaway_prize {
+                    Some(donations::Giveaway {
+                        prize_amount,
+                        end_timestamp: giveaway_end_timestamp.unwrap_or(0),
+                        participants: Vec::new(),
+                        winner: None,
+                        is_resolved: false,
+                    })
+                } else {
+                    None
+                };
                 
                 let post = donations::Post {
                     id: post_id.clone(),
@@ -442,6 +469,8 @@ impl Contract for DonationsContract {
                     content,
                     image_hash,
                     created_at: ts,
+                    poll,
+                    giveaway,
                 };
                 
                 // Save post
@@ -486,6 +515,8 @@ impl Contract for DonationsContract {
                 
                 ResponseData::Ok
             }
+
+
             
             Operation::UpdatePost { post_id, title, content, image_hash } => {
                 let author = self.runtime.authenticated_signer().unwrap();
@@ -576,8 +607,187 @@ impl Contract for DonationsContract {
                 
                 ResponseData::Ok
             }
+            
+            Operation::CastVote { author_chain_id, author, post_id, option_index } => {
+                let voter = self.runtime.authenticated_signer().unwrap();
+                let ts = self.runtime.system_time().micros();
+                let voter_chain_id = self.runtime.chain_id();
+                
+                // If we're on the author's chain - vote directly
+                if author_chain_id == voter_chain_id {
+                    // Validate subscription (author can always vote on their own posts)
+                    if voter != author {
+                        let is_valid = self.check_subscription_valid(voter, author, ts).await;
+                        if !is_valid {
+                            panic!("Invalid or expired subscription");
+                        }
+                    }
+                    
+                    // Check poll exists and hasn't ended
+                    if let Ok(Some(post)) = self.state.get_post(&post_id).await {
+                        if let Some(poll) = &post.poll {
+                            if ts > poll.end_timestamp && poll.end_timestamp > 0 {
+                                panic!("Poll has ended");
+                            }
+                        } else {
+                            panic!("Post has no poll");
+                        }
+                    } else {
+                        panic!("Post not found");
+                    }
+                    
+                    // Cast vote
+                    let voter_id = voter.to_string();
+                    let updated_poll = self.state.cast_vote(&post_id, voter_id, option_index).await
+                        .expect("Failed to cast vote");
+                    
+                    // Emit event
+                    self.runtime.emit("donations_events".into(), &DonationsEvent::VoteCasted {
+                        post_id: post_id.clone(),
+                        voter,
+                        option_index,
+                        timestamp: ts,
+                    });
+                    
+                    // Broadcast updated poll results to all active subscribers
+                    self.broadcast_poll_update(&post_id, &updated_poll, author).await;
+                } else {
+                    // Send vote message to author's chain
+                    self.runtime.prepare_message(Message::VoteCasted {
+                        post_id,
+                        voter,
+                        voter_chain_id,
+                        option_index,
+                    }).with_authentication().send_to(author_chain_id);
+                }
+                
+                ResponseData::Ok
+            }
+            
+            Operation::ParticipateInGiveaway { author_chain_id, author, post_id } => {
+                let participant = self.runtime.authenticated_signer().unwrap();
+                let ts = self.runtime.system_time().micros();
+                let participant_chain_id = self.runtime.chain_id();
+                
+                // If we're on the author's chain - participate directly
+                if author_chain_id == participant_chain_id {
+                    // Validate subscription (author can participate in their own giveaway for testing)
+                    if participant != author {
+                        let is_valid = self.check_subscription_valid(participant, author, ts).await;
+                        if !is_valid {
+                            panic!("Invalid or expired subscription");
+                        }
+                    }
+                    
+                    // Check giveaway exists and hasn't ended
+                    if let Ok(Some(post)) = self.state.get_post(&post_id).await {
+                        if let Some(giveaway) = &post.giveaway {
+                            if ts > giveaway.end_timestamp && giveaway.end_timestamp > 0 {
+                                panic!("Giveaway has ended");
+                            }
+                            if giveaway.is_resolved {
+                                panic!("Giveaway already resolved");
+                            }
+                        } else {
+                            panic!("Post has no giveaway");
+                        }
+                    } else {
+                        panic!("Post not found");
+                    }
+                    
+                    // Add participant
+                    let giveaway_participant = donations::GiveawayParticipant {
+                        owner: participant,
+                        chain_id: participant_chain_id.to_string(),
+                        joined_at: ts,
+                    };
+                    
+                    let updated_giveaway = self.state.add_giveaway_participant(&post_id, giveaway_participant).await
+                        .expect("Failed to join giveaway");
+                    
+                    // Emit event
+                    self.runtime.emit("donations_events".into(), &DonationsEvent::GiveawayParticipated {
+                        post_id: post_id.clone(),
+                        participant,
+                        timestamp: ts,
+                    });
+                    
+                    // Broadcast updated giveaway to all active subscribers
+                    self.broadcast_giveaway_update(&post_id, &updated_giveaway, author).await;
+                } else {
+                    // Send participation message to author's chain
+                    self.runtime.prepare_message(Message::GiveawayParticipation {
+                        post_id,
+                        participant,
+                        participant_chain_id,
+                    }).with_authentication().send_to(author_chain_id);
+                }
+                
+                ResponseData::Ok
+            }
+            
+            Operation::ResolveGiveaway { post_id } => {
+                let author = self.runtime.authenticated_signer().unwrap();
+                let ts = self.runtime.system_time().micros();
+                
+                // Get post and verify ownership
+                let post = self.state.get_post(&post_id).await
+                    .expect("Failed to get post")
+                    .expect("Post not found");
+                
+                if post.author != author {
+                    panic!("Unauthorized: not post author");
+                }
+                
+                let giveaway = post.giveaway.as_ref().expect("Post has no giveaway");
+                
+                if giveaway.is_resolved {
+                    panic!("Giveaway already resolved");
+                }
+                
+                if giveaway.participants.is_empty() {
+                    panic!("No participants to pick winner from");
+                }
+                
+                // Pick winner using pseudo-random selection
+                let participants_count = giveaway.participants.len();
+                let winner_index = (ts as usize + post_id.len() + participants_count) % participants_count;
+                
+                // Resolve and get winner
+                let winner = self.state.resolve_giveaway(&post_id, winner_index).await
+                    .expect("Failed to resolve giveaway");
+                
+                // Transfer prize to winner
+                let winner_chain_id: linera_sdk::linera_base_types::ChainId = winner.chain_id.parse()
+                    .expect("Invalid winner chain ID");
+                let winner_account = Account {
+                    chain_id: winner_chain_id,
+                    owner: winner.owner,
+                };
+                self.runtime.transfer(author, winner_account, giveaway.prize_amount);
+                
+                // Emit event
+                self.runtime.emit("donations_events".into(), &DonationsEvent::GiveawayResolved {
+                    post_id: post_id.clone(),
+                    winner: winner.owner,
+                    winner_chain_id: winner.chain_id.clone(),
+                    prize_amount: giveaway.prize_amount,
+                    timestamp: ts,
+                });
+                
+                // Broadcast resolved giveaway to all active subscribers
+                if let Ok(Some(updated_post)) = self.state.get_post(&post_id).await {
+                    if let Some(updated_giveaway) = &updated_post.giveaway {
+                        self.broadcast_giveaway_update(&post_id, updated_giveaway, author).await;
+                    }
+                }
+                
+                ResponseData::Ok
+            }
         }
     }
+
+
 
     async fn execute_message(&mut self, message: Self::Message) {
         match message {
@@ -745,8 +955,107 @@ impl Contract for DonationsContract {
                 // Subscriber's chain deletes the post
                 let _ = self.state.delete_post(&post_id, author).await;
             }
+            Message::VoteCasted { post_id, voter, voter_chain_id, option_index } => {
+                // Author's chain receives vote from subscriber
+                let ts = self.runtime.system_time().micros();
+                
+                // Get post to find author
+                if let Ok(Some(post)) = self.state.get_post(&post_id).await {
+                    let author = post.author;
+                    
+                    // Validate subscription (author doesn't need subscription for their own posts)
+                    if voter != author {
+                        let is_valid = self.check_subscription_valid(voter, author, ts).await;
+                        if !is_valid {
+                            return; // Ignore invalid vote
+                        }
+                    }
+                    
+                    // Check poll hasn't ended
+                    if let Some(poll) = &post.poll {
+                        if ts > poll.end_timestamp && poll.end_timestamp > 0 {
+                            return; // Poll has ended
+                        }
+                    } else {
+                        return; // No poll
+                    }
+                    
+                    // Cast vote
+                    let voter_id = voter.to_string();
+                    if let Ok(updated_poll) = self.state.cast_vote(&post_id, voter_id, option_index).await {
+                        // Emit event
+                        self.runtime.emit("donations_events".into(), &DonationsEvent::VoteCasted {
+                            post_id: post_id.clone(),
+                            voter,
+                            option_index,
+                            timestamp: ts,
+                        });
+                        
+                        // Broadcast updated poll results to all active subscribers
+                        self.broadcast_poll_update(&post_id, &updated_poll, author).await;
+                    }
+                }
+            }
+            Message::PollResultsUpdated { post_id, poll } => {
+                // Subscriber's chain receives updated poll results
+                let _ = self.state.update_poll_results(&post_id, poll).await;
+            }
+            Message::GiveawayParticipation { post_id, participant, participant_chain_id } => {
+                // Author's chain receives giveaway participation from subscriber
+                let ts = self.runtime.system_time().micros();
+                
+                // Get post to find author
+                if let Ok(Some(post)) = self.state.get_post(&post_id).await {
+                    let author = post.author;
+                    
+                    // Validate subscription
+                    if participant != author {
+                        let is_valid = self.check_subscription_valid(participant, author, ts).await;
+                        if !is_valid {
+                            return; // Ignore invalid participation
+                        }
+                    }
+                    
+                    // Check giveaway exists and hasn't ended
+                    if let Some(giveaway) = &post.giveaway {
+                        if ts > giveaway.end_timestamp && giveaway.end_timestamp > 0 {
+                            return; // Giveaway has ended
+                        }
+                        if giveaway.is_resolved {
+                            return; // Already resolved
+                        }
+                    } else {
+                        return; // No giveaway
+                    }
+                    
+                    // Add participant
+                    let giveaway_participant = donations::GiveawayParticipant {
+                        owner: participant,
+                        chain_id: participant_chain_id.to_string(),
+                        joined_at: ts,
+                    };
+                    
+                    if let Ok(updated_giveaway) = self.state.add_giveaway_participant(&post_id, giveaway_participant).await {
+                        // Emit event
+                        self.runtime.emit("donations_events".into(), &DonationsEvent::GiveawayParticipated {
+                            post_id: post_id.clone(),
+                            participant,
+                            timestamp: ts,
+                        });
+                        
+                        // Broadcast updated giveaway to all active subscribers
+                        self.broadcast_giveaway_update(&post_id, &updated_giveaway, author).await;
+                    }
+                }
+            }
+            Message::GiveawayUpdated { post_id, giveaway } => {
+                // Subscriber's chain receives updated giveaway
+                let _ = self.state.update_giveaway(&post_id, giveaway).await;
+            }
         }
     }
+
+
 
     async fn store(mut self) { self.state.save().await.expect("save") }
 }
@@ -834,8 +1143,108 @@ impl DonationsContract {
                     DonationsEvent::PostDeleted { post_id, author, timestamp: _ } => {
                         let _ = self.state.delete_post(&post_id, author).await;
                     }
+                    DonationsEvent::VoteCasted { post_id: _, voter: _, option_index: _, timestamp: _ } => {
+                        // Vote events are handled through PollResultsUpdated
+                    }
+                    DonationsEvent::PollResultsUpdated { post_id, poll, timestamp: _ } => {
+                        let _ = self.state.update_poll_results(&post_id, poll).await;
+                    }
+                    DonationsEvent::GiveawayParticipated { post_id: _, participant: _, timestamp: _ } => {
+                        // Giveaway participation events are handled through GiveawayUpdated message
+                    }
+                    DonationsEvent::GiveawayResolved { post_id: _, winner: _, winner_chain_id: _, prize_amount: _, timestamp: _ } => {
+                        // Giveaway resolved events are handled through GiveawayUpdated message
+                    }
+                }
+
+            }
+        }
+    }
+    
+    /// Check if a subscriber has a valid (non-expired) subscription to an author
+    async fn check_subscription_valid(&self, subscriber: AccountOwner, author: AccountOwner, current_time: u64) -> bool {
+        // Author is always valid for their own content
+        if subscriber == author {
+            return true;
+        }
+        
+        let sub_ids = self.state.subscriptions_by_author.get(&author).await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        
+        for sub_id in sub_ids {
+            if let Ok(Some(sub)) = self.state.content_subscriptions.get(&sub_id).await {
+                if sub.subscriber == subscriber && sub.end_timestamp >= current_time {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    
+    /// Broadcast updated poll results to all active subscribers
+    async fn broadcast_poll_update(&mut self, post_id: &str, poll: &donations::Poll, author: AccountOwner) {
+        let ts = self.runtime.system_time().micros();
+        let author_chain_id = self.runtime.chain_id();
+        
+        // Emit poll updated event
+        self.runtime.emit("donations_events".into(), &DonationsEvent::PollResultsUpdated {
+            post_id: post_id.to_string(),
+            poll: poll.clone(),
+            timestamp: ts,
+        });
+        
+        // Get all active subscriptions and send to subscribers
+        let all_subs = self.state.subscriptions_by_author.get(&author).await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        
+        for sub_id in all_subs {
+            if let Ok(Some(sub)) = self.state.content_subscriptions.get(&sub_id).await {
+                if sub.end_timestamp >= ts {
+                    // Active subscription - send poll update
+                    if let Ok(subscriber_chain_id) = sub.subscriber_chain_id.parse() {
+                        if subscriber_chain_id != author_chain_id {
+                            self.runtime.prepare_message(Message::PollResultsUpdated {
+                                post_id: post_id.to_string(),
+                                poll: poll.clone(),
+                            }).with_authentication().send_to(subscriber_chain_id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Broadcast updated giveaway to all active subscribers
+    async fn broadcast_giveaway_update(&mut self, post_id: &str, giveaway: &donations::Giveaway, author: AccountOwner) {
+        let ts = self.runtime.system_time().micros();
+        let author_chain_id = self.runtime.chain_id();
+        
+        // Get all active subscriptions and send to subscribers
+        let all_subs = self.state.subscriptions_by_author.get(&author).await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        
+        for sub_id in all_subs {
+            if let Ok(Some(sub)) = self.state.content_subscriptions.get(&sub_id).await {
+                if sub.end_timestamp >= ts {
+                    // Active subscription - send giveaway update
+                    if let Ok(subscriber_chain_id) = sub.subscriber_chain_id.parse() {
+                        if subscriber_chain_id != author_chain_id {
+                            self.runtime.prepare_message(Message::GiveawayUpdated {
+                                post_id: post_id.to_string(),
+                                giveaway: giveaway.clone(),
+                            }).with_authentication().send_to(subscriber_chain_id);
+                        }
+                    }
                 }
             }
         }
     }
 }
+
+

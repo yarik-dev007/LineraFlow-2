@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 // Type aliases for custom fields
 pub type CustomFields = BTreeMap<String, String>;
 pub type OrderResponses = BTreeMap<String, String>;
+pub type VotersMap = BTreeMap<String, u32>;  // voter_id -> option_index
 
 #[derive(Debug, Deserialize, Serialize)]
 pub enum Message {
@@ -75,6 +76,27 @@ pub enum Message {
     PostDeleted {
         post_id: String,
         author: AccountOwner,
+    },
+    // Voting messages
+    VoteCasted {
+        post_id: String,
+        voter: AccountOwner,
+        voter_chain_id: ChainId,
+        option_index: u32,
+    },
+    PollResultsUpdated {
+        post_id: String,
+        poll: Poll,
+    },
+    // Giveaway messages
+    GiveawayParticipation {
+        post_id: String,
+        participant: AccountOwner,
+        participant_chain_id: ChainId,
+    },
+    GiveawayUpdated {
+        post_id: String,
+        giveaway: Giveaway,
     },
 }
 
@@ -155,6 +177,44 @@ pub struct ContentSubscription {
     pub price: Amount,
 }
 
+// Poll option structure
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct PollOption {
+    pub text: String,
+    pub votes_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, InputObject)]
+pub struct PollOptionInput {
+    pub text: String,
+}
+
+// Poll structure
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct Poll {
+    pub options: Vec<PollOption>,
+    pub end_timestamp: u64,
+    pub voters: VotersMap,
+}
+
+// Giveaway participant - stores chain_id for prize transfer
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct GiveawayParticipant {
+    pub owner: AccountOwner,
+    pub chain_id: String,
+    pub joined_at: u64,
+}
+
+// Giveaway structure
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct Giveaway {
+    pub prize_amount: Amount,
+    pub end_timestamp: u64,
+    pub participants: Vec<GiveawayParticipant>,
+    pub winner: Option<GiveawayParticipant>,
+    pub is_resolved: bool,
+}
+
 // Post structure
 #[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
 pub struct Post {
@@ -165,6 +225,8 @@ pub struct Post {
     pub content: String,
     pub image_hash: Option<String>,
     pub created_at: u64,
+    pub poll: Option<Poll>,
+    pub giveaway: Option<Giveaway>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
@@ -295,6 +357,12 @@ pub enum DonationsEvent {
     PostCreated { post: Post, timestamp: u64 },
     PostUpdated { post: Post, timestamp: u64 },
     PostDeleted { post_id: String, author: AccountOwner, timestamp: u64 },
+    // Voting events
+    VoteCasted { post_id: String, voter: AccountOwner, option_index: u32, timestamp: u64 },
+    PollResultsUpdated { post_id: String, poll: Poll, timestamp: u64 },
+    // Giveaway events
+    GiveawayParticipated { post_id: String, participant: AccountOwner, timestamp: u64 },
+    GiveawayResolved { post_id: String, winner: AccountOwner, winner_chain_id: String, prize_amount: Amount, timestamp: u64 },
 }
 
 pub struct DonationsAbi;
@@ -381,6 +449,10 @@ pub enum Operation {
         title: String,
         content: String,
         image_hash: Option<String>,
+        poll_options: Vec<String>,
+        poll_end_timestamp: Option<u64>,
+        giveaway_prize: Option<Amount>,
+        giveaway_end_timestamp: Option<u64>,
     },
     
     UpdatePost {
@@ -391,6 +463,25 @@ pub enum Operation {
     },
     
     DeletePost {
+        post_id: String,
+    },
+    
+    // Voting operation
+    CastVote {
+        author_chain_id: ChainId,
+        author: AccountOwner,
+        post_id: String,
+        option_index: u32,
+    },
+    
+    // Giveaway operations
+    ParticipateInGiveaway {
+        author_chain_id: ChainId,
+        author: AccountOwner,
+        post_id: String,
+    },
+    
+    ResolveGiveaway {
         post_id: String,
     },
 }

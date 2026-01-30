@@ -14,7 +14,11 @@ if (fs.existsSync(envPath)) {
 
 // Configuration
 const LINERA_CHAIN_ID = process.env.VITE_LINERA_MAIN_CHAIN_ID || 'fcc99b4e4c6be2f33864d71de61acb33c0f692c397a32b6d64578cf0c82f7faa';
-const LINERA_APP_ID = process.env.VITE_LINERA_APPLICATION_ID || 'a205b6233965c4d98d9f36dd11e1ff10693a864eb9d53d800b8cd463996d50b6';
+const LINERA_APP_ID = process.env.VITE_LINERA_APPLICATION_ID;
+if (!LINERA_APP_ID) {
+    console.error('❌ Error: VITE_LINERA_APPLICATION_ID is not defined in .env');
+    process.exit(1);
+}
 const LINERA_NODE_URL = `http://localhost:7071`;
 const LINERA_WS_URL = `ws://localhost:7071/ws`;
 const POCKETBASE_URL = process.env.VITE_POCKETBASE_URL_INTERNAL || 'http://127.0.0.1:8091';
@@ -146,6 +150,21 @@ async function syncProfiles() {
                 console.error(`❌ Error processing profile ${p.owner}:`, e.message);
             }
         }
+
+
+        // Cleanup: Remove profiles that are no longer on chain
+        const pbProfiles = await pb.collection('profiles').getFullList();
+        const chainOwners = new Set(profiles.map(p => p.owner));
+        for (const local of pbProfiles) {
+            if (!chainOwners.has(local.owner)) {
+                console.log(`🗑️  [SYNC] Deleting removed profile: ${local.name} (${local.owner})`);
+                try {
+                    await pb.collection('profiles').delete(local.id);
+                } catch (err) {
+                    console.error(`❌ Failed to delete orphan profile ${local.id}:`, err.message);
+                }
+            }
+        }
     } catch (e) {
         logPbError('Profiles', e);
     }
@@ -199,6 +218,28 @@ async function syncDonations() {
                 }
             } catch (e) {
                 console.error('❌ Error processing donation:', e.message);
+            }
+        }
+
+
+        // Cleanup: Remove donations that are no longer on chain
+        // We use a composite key since we don't store the exact contract ID yet
+        const pbDonations = await pb.collection('donations').getFullList();
+        const chainKeys = new Set(donations.map(d => {
+            const amt = String(d.amount).replace(/\.$/, '');
+            const flt = parseFloat(amt) || 0;
+            return `${d.timestamp}_${d.from}_${d.to}_${flt}`;
+        }));
+
+        for (const local of pbDonations) {
+            const localKey = `${local.timestamp}_${local.from_owner}_${local.to_owner}_${local.amount}`;
+            if (!chainKeys.has(localKey)) {
+                console.log(`🗑️  [SYNC] Deleting removed donation: ${local.id}`);
+                try {
+                    await pb.collection('donations').delete(local.id);
+                } catch (err) {
+                    console.error(`❌ Failed to delete orphan donation ${local.id}:`, err.message);
+                }
             }
         }
     } catch (e) {

@@ -103,6 +103,32 @@ export interface SubscriptionOffer {
   authorChainId?: string;
 }
 
+export interface PollOption {
+  text: string;
+  votesCount: number;
+}
+
+export interface Poll {
+  options: PollOption[];
+  endTimestamp: number;
+  totalVotes: number;
+  isEnded: boolean;
+}
+
+export interface GiveawayParticipant {
+  owner: string;
+  chainId: string;
+}
+
+export interface Giveaway {
+  prizeAmount: string; // Amount type is usually string in GraphQL
+  endTimestamp: number;
+  participantsCount: number;
+  isEnded: boolean;
+  isResolved: boolean;
+  winner?: GiveawayParticipant | null;
+}
+
 export interface Post {
   id: string;
   author: string;
@@ -111,6 +137,8 @@ export interface Post {
   content: string;
   imageHash: string | null;
   createdAt: number;
+  poll?: Poll | null;
+  giveaway?: Giveaway | null;
 
   // Enriched data
   authorName?: string;
@@ -124,4 +152,4 @@ export enum InteractionState {
   LOADING = 'LOADING'
 }
 
-export type AppView = 'LANDING' | 'EXPLORE' | 'PROFILE' | 'CREATOR_DETAIL' | 'MARKETPLACE' | 'FEED';
+export type AppView = 'LANDING' | 'EXPLORE' | 'PROFILE' | 'CREATOR_DETAIL' | 'MARKETPLACE' | 'FEED' | 'STATISTICS';

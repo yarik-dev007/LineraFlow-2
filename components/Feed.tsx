@@ -3,7 +3,7 @@ import { useLinera } from './LineraProvider';
 import { Post, Creator } from '../types';
 import { pb } from './pocketbase';
 import { cacheManager } from '../utils/cacheManager';
-import { MessageCircle, Heart, Share2, Plus, Edit, Trash2 } from 'lucide-react';
+import { MessageCircle, Heart, Share2, Plus, Edit, Trash2, CheckCircle, Circle, Trophy, Gift, Calendar, Clock } from 'lucide-react';
 import CreatePostModal from './CreatePostModal';
 import RegistrationAlert from './RegistrationAlert';
 
@@ -22,6 +22,13 @@ const Feed: React.FC = () => {
     const [showRegistrationAlert, setShowRegistrationAlert] = useState(false);
 
     const [viewMode, setViewMode] = useState<'FEED' | 'MY_POSTS'>('FEED');
+
+    // Force re-render every 30s to update time-sensitive UI (Giveaway buttons)
+    const [, setTick] = useState(0);
+    useEffect(() => {
+        const interval = setInterval(() => setTick(t => t + 1), 30000);
+        return () => clearInterval(interval);
+    }, []);
 
     // Helper to fetch blobs
     const fetchBlobs = useCallback(async (hashes: string[]) => {
@@ -97,6 +104,20 @@ const Feed: React.FC = () => {
         content
         imageHash
         createdAt
+        poll {
+            options { text votesCount }
+            endTimestamp
+            totalVotes
+            isEnded
+        }
+        giveaway {
+            prizeAmount
+            endTimestamp
+            participantsCount
+            isEnded
+            isResolved
+            winner { owner chainId }
+        }
     }
 } `;
             } else {
@@ -109,6 +130,20 @@ const Feed: React.FC = () => {
         content
         imageHash
         createdAt
+        poll {
+            options { text votesCount }
+            endTimestamp
+            totalVotes
+            isEnded
+        }
+        giveaway {
+            prizeAmount
+            endTimestamp
+            participantsCount
+            isEnded
+            isResolved
+            winner { owner chainId }
+        }
     }
 } `;
             }
@@ -169,9 +204,8 @@ const Feed: React.FC = () => {
                     imageHash: p.imageHash,
                     createdAt: typeof p.createdAt === 'string' ? parseInt(p.createdAt) : p.createdAt, // handle u64 string
                     authorName: authorProfile?.name || 'Unknown',
-                    authorAvatar: authorProfile?.avatar_file
-                        ? pb.files.getUrl(authorProfile, authorProfile.avatar_file)
-                        : undefined
+                    poll: p.poll,
+                    giveaway: p.giveaway
                 };
             });
 
@@ -257,6 +291,67 @@ const Feed: React.FC = () => {
             // Assume not registered on error
             setShowRegistrationAlert(true);
             return false;
+        }
+    };
+
+    const handleVote = async (post: Post, optionIndex: number) => {
+        if (!application || !accountOwner) return;
+        try {
+            const mutation = `mutation {
+                castVote(
+                    authorChainId: "${post.authorChainId}",
+                    author: "${post.author}",
+                    postId: "${post.id}",
+                    optionIndex: ${optionIndex}
+                )
+            }`;
+            await application.query(JSON.stringify({ query: mutation }), { owner: accountOwner });
+            fetchFeed(); // Refresh to show updated results
+        } catch (err) {
+            console.error("Vote failed:", err);
+            alert("Failed to cast vote");
+        }
+    };
+
+    const handleParticipate = async (post: Post) => {
+        if (!application || !accountOwner) return;
+        try {
+            const mutation = `mutation {
+                participateInGiveaway(
+                    authorChainId: "${post.authorChainId}",
+                    author: "${post.author}",
+                    postId: "${post.id}"
+                )
+            }`;
+            await application.query(JSON.stringify({ query: mutation }), { owner: accountOwner });
+            alert("Success! You joined the giveaway.");
+            fetchFeed();
+        } catch (err: any) {
+            console.error("Participation failed:", err);
+            // Simple check for "Already participating" error string from backend
+            if (err.toString().includes("Already participating")) {
+                alert("You are already participating!");
+            } else {
+                alert("Failed to join giveaway.");
+            }
+        }
+    };
+
+    const handleResolve = async (post: Post) => {
+        if (!application || !accountOwner) return;
+        // Confirmation
+        if (!confirm("Are you sure you want to end the giveaway and pick a winner? This cannot be undone.")) return;
+
+        try {
+            const mutation = `mutation {
+                resolveGiveaway(postId: "${post.id}")
+            }`;
+            await application.query(JSON.stringify({ query: mutation }), { owner: accountOwner });
+            alert("Giveaway resolved! Winner picked.");
+            fetchFeed();
+        } catch (err) {
+            console.error("Resolve failed:", err);
+            alert("Failed to resolve giveaway.");
         }
     };
 
@@ -405,6 +500,134 @@ const Feed: React.FC = () => {
                                                 <span className="font-mono text-xs text-gray-400 uppercase">Deciphering Blob...</span>
                                             </div>
                                         )}
+                                    </div>
+                                )}
+
+                                {/* POLL SECTION */}
+                                {post.poll && (
+                                    <div className="p-4 border-t-2 border-gray-100 bg-gray-50">
+                                        <div className="flex justify-between items-center mb-4">
+                                            <h4 className="font-display text-sm uppercase text-gray-500 flex items-center gap-2">
+                                                <MessageCircle className="w-4 h-4" /> Poll
+                                            </h4>
+                                            <span className="font-mono text-xs font-bold px-2 py-1 bg-gray-200 rounded text-gray-600">
+                                                {post.poll.isEnded ? 'ENDED' : 'ACTIVE'}
+                                            </span>
+                                        </div>
+                                        <div className="space-y-3">
+                                            {post.poll.options.map((opt, idx) => {
+                                                const percentage = post.poll!.totalVotes > 0
+                                                    ? Math.round((opt.votesCount / post.poll!.totalVotes) * 100)
+                                                    : 0;
+                                                return (
+                                                    <button
+                                                        key={idx}
+                                                        onClick={() => !post.poll!.isEnded && handleVote(post, idx)}
+                                                        disabled={post.poll!.isEnded}
+                                                        className={`w-full relative h-10 border-2 border-deep-black bg-white overflow-hidden transition-all group ${!post.poll!.isEnded ? 'hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] active:shadow-none' : 'cursor-default opacity-80'}`}
+                                                    >
+                                                        {/* Progress Bar */}
+                                                        <div
+                                                            className="absolute top-0 left-0 h-full bg-emerald-100 transition-all duration-500"
+                                                            style={{ width: `${percentage}%` }}
+                                                        />
+                                                        {/* Content */}
+                                                        <div className="absolute inset-0 flex items-center justify-between px-4 z-10">
+                                                            <span className="font-mono text-sm font-bold truncate">{opt.text}</span>
+                                                            <span className="font-mono text-xs text-gray-500">{percentage}% ({opt.votesCount})</span>
+                                                        </div>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                        <div className="mt-2 text-right">
+                                            <span className="font-mono text-xs text-gray-400">Total Votes: {post.poll.totalVotes}</span>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* GIVEAWAY SECTION */}
+                                {post.giveaway && (
+                                    <div className="p-4 border-t-2 border-gray-100 bg-gradient-to-r from-purple-50 to-pink-50 relative overflow-hidden">
+                                        <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
+                                            <Gift className="w-24 h-24" />
+                                        </div>
+
+                                        <div className="relative z-10">
+                                            <div className="flex justify-between items-start mb-4">
+                                                <div>
+                                                    <h4 className="font-display text-lg uppercase text-purple-900 flex items-center gap-2 mb-1">
+                                                        <Gift className="w-5 h-5" /> Giveaway
+                                                    </h4>
+                                                    <p className="font-mono text-xs text-purple-600">
+                                                        Ends: {new Date(post.giveaway.endTimestamp / 1000).toLocaleString()}
+                                                    </p>
+                                                </div>
+                                                <div className="text-right">
+                                                    <div className="font-display text-2xl text-purple-900 text-end">{post.giveaway.prizeAmount}</div>
+                                                    <div className="font-mono text-xs font-bold text-purple-600 uppercase">Prize Pool</div>
+                                                </div>
+                                            </div>
+
+                                            {/* Winner Display */}
+                                            {post.giveaway.winner && (
+                                                <div className="bg-white/80 border-2 border-purple-200 p-3 mb-4 flex items-start gap-3 animate-fade-in">
+                                                    <div className="w-8 h-8 bg-yellow-400 rounded-full flex items-center justify-center border-2 border-deep-black text-white shrink-0 mt-1">
+                                                        <Trophy className="w-4 h-4 text-deep-black" />
+                                                    </div>
+                                                    <div className="min-w-0 flex-1">
+                                                        <div className="font-mono text-[10px] uppercase font-bold text-gray-500 mb-1">Winner</div>
+                                                        <div className="font-mono text-xs text-deep-black break-all bg-white/50 p-1 rounded border border-purple-100 mb-1">
+                                                            <span className="font-bold text-purple-900">Owner:</span> {post.giveaway.winner.owner}
+                                                        </div>
+                                                        <div className="font-mono text-xs text-gray-600 break-all bg-white/50 p-1 rounded border border-purple-100">
+                                                            <span className="font-bold text-gray-800">Chain:</span> {post.giveaway.winner.chainId}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            {/* Action Buttons */}
+                                            <div className="flex gap-2">
+                                                {(() => {
+                                                    // Dynamic Client-Side Time Check
+                                                    // Convert u64 microseconds to milliseconds for comparison
+                                                    const endTimeMs = post.giveaway!.endTimestamp / 1000;
+                                                    // Check if ended either by server flag OR client time
+                                                    const isEndedClient = post.giveaway!.isEnded || (Date.now() >= endTimeMs);
+
+                                                    return (
+                                                        <>
+                                                            {!isEndedClient && !post.giveaway!.winner && (
+                                                                <button
+                                                                    onClick={() => handleParticipate(post)}
+                                                                    className="flex-1 bg-deep-black text-white font-mono text-sm font-bold py-2 uppercase tracking-wide hover:bg-purple-600 transition-colors shadow-[4px_4px_0px_0px_rgba(0,0,0,0.2)] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,0.2)] active:translate-y-[2px]"
+                                                                >
+                                                                    Participate ({post.giveaway!.participantsCount})
+                                                                </button>
+                                                            )}
+
+                                                            {/* Author Resolve Button */}
+                                                            {accountOwner === post.author && isEndedClient && !post.giveaway!.isResolved && (
+                                                                <button
+                                                                    onClick={() => handleResolve(post)}
+                                                                    className="flex-1 bg-yellow-400 text-deep-black border-2 border-deep-black font-mono text-sm font-bold py-2 uppercase tracking-wide hover:bg-yellow-300 transition-colors shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-y-[2px]"
+                                                                >
+                                                                    <Trophy className="w-4 h-4 inline mr-2" />
+                                                                    Pick Winner
+                                                                </button>
+                                                            )}
+
+                                                            {post.giveaway!.isResolved && (
+                                                                <div className="w-full text-center py-2 font-mono text-xs font-bold text-purple-700 bg-purple-100/50 border border-purple-200 rounded">
+                                                                    Giveaway Resolved
+                                                                </div>
+                                                            )}
+                                                        </>
+                                                    );
+                                                })()}
+                                            </div>
+                                        </div>
                                     </div>
                                 )}
 
